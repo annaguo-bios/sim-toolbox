@@ -81,8 +81,9 @@ for (e in estimator){
             cat("Renamed:", basename, "->", basename(new_filename), "\n")
             
           } else {
-            cat("Warning: Target file already exists, skipping rename of", basename, "\n")
+            cat("Warning: Target file already exists, skipping rename of", basename, ", and delete it \n")
             renamed <- c(renamed, F)
+            file.remove(file) # delete the duplicated file
           }
         }
       }
