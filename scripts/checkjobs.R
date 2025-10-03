@@ -173,7 +173,7 @@ if (nrow(missjob) > 0){
   n_files <- ceiling(length(job_lines) / max_rows_per_file)
   
   if (n_files == 1){
-    write.table(job_lines, file = output_jobfile ,quote = F, col.names = F, row.names = F)
+    write.table(job_lines, file = paste0(output_jobfile,'_n1.txt') ,quote = F, col.names = F, row.names = F)
     cat("Wrote", length(job_lines), "jobs to", output_jobfile, "\n")
   } else {
     for (file_idx in 1:n_files){
@@ -182,7 +182,7 @@ if (nrow(missjob) > 0){
       
       # Create filename with suffix
       file_base <- sub("\\.txt$", "", output_jobfile)
-      current_file <- paste0(file_base, file_idx, ".txt")
+      current_file <- paste0(file_base, '_n',file_idx, ".txt")
       
       writeLines(job_lines[start_idx:end_idx], current_file)
       cat("Wrote", end_idx - start_idx + 1, "jobs to", current_file, "\n")
