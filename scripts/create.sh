@@ -26,7 +26,7 @@ done
 dsq_path="/home/aguo28/dSQ-master"
 
 # Default partition(s)
-default_partition="day-long-cpu,short-cpu,empire"
+default_partition="day-long-cpu,short-cpu"
 
 # Ask user if default is ok
 echo "Default partition is: $default_partition"
