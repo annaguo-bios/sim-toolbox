@@ -1,190 +1,207 @@
 # Create a single stdin connection to reuse
 stdin_con <- file("stdin", open="r")
 
-# Function to read input that works with Rscript
 read_input <- function(prompt, con=stdin_con) {
   cat(prompt)
   return(readLines(con, n=1))
 }
 
-## default paramaters ## ====
-estimator <- c('TMLE','Onestep','EstEquation')
-n.vec <- c(500,1000,2000)
-nsim <- 1000
-missjob <- data.frame(n=integer(),
-                      i=integer())
+## default parameters ## ====
+estimator   <- c('TMLE','Onestep','EstEquation')
+n.vec       <- c(500, 1000, 2000)
+nsim        <- 1000
+missjob     <- data.frame(n=integer(), i=integer())
+
+output_folder_default     <- "output"
+filename_template_default <- "output_{n}_{i}.Rdata"
+
+cat("
++------------------------------------------------------------------+
+|          check_and_resubmit.R  --  Quick Reference               |
++------------------------------------------------------------------+
+| DIR    [estimator/]<output_folder>/<filename>                     |
+|        estimator='none' -> no estimator subfolder                 |
+| FILE   {n}=sample size, {i}=sim index  (regex auto-derived)       |
+|        e.g. data_n{n}_seed{i}.Rdata -> data_n1000_seed42.Rdata    |
+| JOBLINES  use joblist_n1.txt as the default reference for joblines|
+| I usually use 'Rscript main.R {n} {i}' in joblist_n1.txt.         |
++------------------------------------------------------------------+
+")
 
 cat("\n--- Collecting inputs ---\n")
-# sample size
-n_input <- read_input(paste0("Enter sample size to check (comma-separated), or press enter to use default (default: ", paste(n.vec, collapse=", "), "): "))
 
-if (n_input != ""){
-  n.vec <- as.numeric(unlist(strsplit(n_input, ",")))
-  cat("Using sample sizes:", paste(n.vec, collapse=", "), "\n")
-} else {
-  cat("Using default sample sizes:", paste(n.vec, collapse=", "), "\n")
-}
+n_input <- read_input(paste0("Sample sizes (default: ", paste(n.vec, collapse=", "), "): "))
+if (n_input != "") n.vec <- as.numeric(unlist(strsplit(n_input, ",")))
+cat("  n:", paste(n.vec, collapse=", "), "\n")
 
-# estimator
-estimator_input <- read_input(paste0("Enter estimators to check (comma-separated), or press enter to use default (default: ", paste(estimator, collapse=", "), "): "))
-if (estimator_input != ""){
+estimator_input <- read_input(paste0("Estimator folders (default: ", paste(estimator, collapse=", "), "; 'none' for no subfolder): "))
+if (estimator_input == "none") {
+  estimator <- NULL
+} else if (estimator_input != "") {
   estimator <- unlist(strsplit(estimator_input, ","))
-  cat("Using estimators:", paste(estimator, collapse=", "), "\n")
-} else {
-  cat("Using default estimators:", paste(estimator, collapse=", "), "\n")
+}
+cat("  estimator:", if (is.null(estimator)) "none" else paste(estimator, collapse=", "), "\n")
+
+nsim_input <- read_input(paste0("nsim (default: ", nsim, "): "))
+if (nsim_input != "") nsim <- as.numeric(nsim_input)
+cat("  nsim:", nsim, "\n")
+
+output_folder_input <- read_input(paste0("Output folder (default: ", output_folder_default, "): "))
+output_folder <- if (output_folder_input != "") output_folder_input else output_folder_default
+cat("  output_folder:", output_folder, "\n")
+
+filename_template_input <- read_input(paste0("Filename template (default: ", filename_template_default, "): "))
+filename_template <- if (filename_template_input != "") filename_template_input else filename_template_default
+cat("  filename_template:", filename_template, "\n")
+
+# auto-derive regex from template
+template_to_regex <- function(tmpl) {
+  r <- gsub("\\.", "\\\\.", tmpl)
+  r <- gsub("\\{n\\}", "(?P<n>[0-9]+)", r)
+  r <- gsub("\\{i\\}", "(?P<i>[0-9]+)", r)
+  paste0("^", r, "$")
+}
+filename_regex <- template_to_regex(filename_template)
+cat("  filename_regex (auto):", filename_regex, "\n")
+
+## helpers ## ====
+
+make_output_dir <- function(e) {
+  if (is.null(e)) output_folder else file.path(e, output_folder)
 }
 
-# nsim
-nsim_input <- read_input(paste0("Enter number of simulations (nsim) (default: ", nsim, "): "))
-if (nsim_input != ""){
-  nsim <- as.numeric(nsim_input)
-  cat("Using nsim:", nsim, "\n")
-} else {
-  cat("Using default nsim:", nsim, "\n")
+make_filename <- function(n_val, i_val) {
+  s <- gsub("\\{n\\}", n_val, filename_template)
+  s <- gsub("\\{i\\}", i_val, s)
+  s
 }
 
-## check all exist jobs: e/output/output_n_i.Rdata ##====
-# if i>nsim, rename the job with i <- i%%nsim
+# Parse n and i from a filename; returns list(n=..., i=...) or NULL
+parse_filename <- function(bn) {
+  r_regex <- gsub("\\(\\?P<", "(?<", filename_regex) # convert to R perl syntax
+  m <- regexpr(r_regex, bn, perl=TRUE)
+  if (m == -1) return(NULL)
+  starts  <- attr(m, "capture.start")
+  lengths <- attr(m, "capture.length")
+  names_  <- attr(m, "capture.names")
+  get_group <- function(gname) {
+    idx <- which(names_ == gname)
+    if (length(idx) == 0) return(NA)
+    substr(bn, starts[idx], starts[idx] + lengths[idx] - 1)
+  }
+  list(n = as.numeric(get_group("n")),
+       i = as.numeric(get_group("i")))
+}
+
+## check for duplicated / ill-named files ## ====
 cat("\n--- Check for duplicated/ill-named files ---\n")
 duplicated_results <- c()
-renamed <- c()
+renamed            <- c()
 
-for (e in estimator){
-  output_dir <- file.path(e, "/output")
-  
-  if (dir.exists(output_dir)){
-    files <- list.files(output_dir, pattern="^output_.*\\.Rdata$", full.names=TRUE)
-    
-    for (file in files){
-      basename <- basename(file)
-      
-      # Pattern: output_n_i.Rdata
-      matches <- regmatches(basename, regexec("^output_([0-9]+)_([0-9]+)\\.Rdata$", basename))
-      
-      if (length(matches[[1]]) == 3){
-        n_val <- as.numeric(matches[[1]][2])
-        i_val <- as.numeric(matches[[1]][3])
-        
-        # If i > nsim, rename the file
-        if (i_val > nsim){
-          adjusted_i <- i_val %% nsim
-          duplicated_results <- c(duplicated_results, paste0("output_", n_val, "_", i_val, ".Rdata")) # keep a record of the name
-          
-          if (adjusted_i == 0) adjusted_i <- nsim # 2000%%1000 would be renamed 1000
-          
-          new_filename <- file.path(output_dir, paste0("output_", n_val, "_", adjusted_i, ".Rdata"))
-          
-          
-          if (!file.exists(new_filename)){ # only rename if the new filename doesn't already exist
-            file.rename(file, new_filename)
-            renamed <- c(renamed, T)
-            cat("Renamed:", basename, "->", basename(new_filename), "\n")
-            
-          } else {
-            cat("Warning: Target file already exists, skipping rename of", basename, ", and delete it \n")
-            renamed <- c(renamed, F)
-            file.remove(file) # delete the duplicated file
-          }
+estimator_list <- if (is.null(estimator)) list(NULL) else as.list(estimator)
+
+for (e in estimator_list) {
+  output_dir <- make_output_dir(e)
+  if (dir.exists(output_dir)) {
+    files <- list.files(output_dir, full.names=TRUE)
+    for (file in files) {
+      bn     <- basename(file)
+      parsed <- parse_filename(bn)
+      if (is.null(parsed)) next
+      n_val <- parsed$n
+      i_val <- parsed$i
+      if (i_val > nsim) {
+        adjusted_i <- i_val %% nsim
+        if (adjusted_i == 0) adjusted_i <- nsim
+        duplicated_results <- c(duplicated_results, bn)
+        new_filename <- file.path(output_dir, make_filename(n_val, adjusted_i))
+        if (!file.exists(new_filename)) {
+          file.rename(file, new_filename)
+          renamed <- c(renamed, TRUE)
+          cat("Renamed:", bn, "->", basename(new_filename), "\n")
+        } else {
+          cat("Warning: target exists, deleting duplicate:", bn, "\n")
+          renamed <- c(renamed, FALSE)
+          file.remove(file)
         }
       }
     }
   }
 }
 
-if (length(duplicated_results) > 0){
-  cat("Total files renamed:", sum(renamed), "out of", length(duplicated_results), "\n")
-  write.csv(data.frame(duplicated_results, renamed), "duplicated_results.csv",row.names = F, col.names = F)
+if (length(duplicated_results) > 0) {
+  cat("Total renamed:", sum(renamed), "out of", length(duplicated_results), "\n")
+  write.csv(data.frame(duplicated_results, renamed), "duplicated_results.csv", row.names=FALSE)
 } else {
   cat("No files needed renaming.\n")
 }
 
-## check the existence of results ##====
+## check for missing results ## ====
 cat("\n--- Check missing results ---\n")
-for (e in estimator){
-  for (n in n.vec){
-    for (i in 1:nsim){
-      output_file <- file.path(e, "/output/", paste0("output_", n, "_", i, ".Rdata"))
-      
-      if (!file.exists(output_file)){ # check if the file exists
-       
-         # If not, record (n,i)
-        missjob <- rbind(missjob,
-                         data.frame(n=n,
-                                    i=i))
+
+for (e in estimator_list) {
+  output_dir <- make_output_dir(e)
+  for (n in n.vec) {
+    for (i in 1:nsim) {
+      output_file <- file.path(output_dir, make_filename(n, i))
+      if (!file.exists(output_file)) {
+        missjob <- rbind(missjob, data.frame(n=n, i=i))
       }
     }
   }
 }
 
-# Remove duplicate entries (same n,i combination)
 missjob <- unique(missjob)
-
-# Print summary
 cat("Total missing jobs found:", nrow(missjob), "\n")
 
-## rewrite job files to produce the results that are missing ##====
-cat("\n--- Writing job to generate missing results ---\n")
-if(file.exists("joblist_n1.txt")){
-  cat("Default job template file 'joblist_n1.txt' found.\n")
+## write job files for missing results ## ====
+cat("\n--- Writing jobs to generate missing results ---\n")
+
+if (file.exists("joblist_n1.txt")) {
+  cat("Job template 'joblist_n1.txt' found.\n")
   job_template_file <- "joblist_n1.txt"
 } else {
-  job_template_file <- read_input("Default job template file 'joblist_n1.txt' not found. Enter the name of the file containing job format (default: joblist_n1.txt): ")
+  job_template_file <- read_input("Job template not found. Enter template filename: ")
 }
 
+TIME_input <- read_input("TIME value for job index offset (default: 0): ")
+TIME <- if (TIME_input == "") 0 else as.numeric(TIME_input)
 
-TIME_default <- read_input("Enter TIME value for calculating job index (default: 0): ")
-TIME <- ifelse(TIME_default == "", 0, as.numeric(TIME_default))
-
-output_jobfile <- read_input("Enter output job file name (default: error.txt): ")
+output_jobfile <- read_input("Output job file name (default: error_n{1,2,3,...}.txt): ")
 if (output_jobfile == "") output_jobfile <- "error.txt"
 
-
-# Close the stdin connection
 close(stdin_con)
 
-# Read the template job format
-if (!file.exists(job_template_file)){
+if (!file.exists(job_template_file)) {
   stop(paste("Job template file", job_template_file, "does not exist!"))
 }
 
-# Read the first line as template
 template_line <- readLines(job_template_file, n=1)
 
-# Generate job lines for missing jobs
-if (nrow(missjob) > 0){
+if (nrow(missjob) > 0) {
   job_lines <- c()
-  
-  for (idx in 1:nrow(missjob)){
-    n_val <- missjob$n[idx]
-    i_val <- missjob$i[idx]
-    
-    # Calculate the adjusted index
+  for (idx in 1:nrow(missjob)) {
+    n_val      <- missjob$n[idx]
+    i_val      <- missjob$i[idx]
     adjusted_i <- i_val + nsim * TIME
-    
-    # Parse the template and replace 3rd and 4th arguments
-    parts <- strsplit(template_line, "\\s+")[[1]]
+    parts    <- strsplit(template_line, "\\s+")[[1]]
     parts[3] <- as.character(n_val)
     parts[4] <- as.character(adjusted_i)
-    
     job_lines <- c(job_lines, paste(parts, collapse=" "))
   }
-  
-  # Split into multiple files if needed (1000 rows per file)
+
   max_rows_per_file <- 1000
   n_files <- ceiling(length(job_lines) / max_rows_per_file)
-  
-  if (n_files == 1){
-    write.table(job_lines, file = paste0(output_jobfile,'_n1.txt') ,quote = F, col.names = F, row.names = F)
-    cat("Wrote", length(job_lines), "jobs to", output_jobfile, "\n")
+
+  if (n_files == 1) {
+    out_path <- paste0(sub("\\.txt$", "", output_jobfile), "_n1.txt")
+    writeLines(job_lines, out_path)
+    cat("Wrote", length(job_lines), "jobs to", out_path, "\n")
   } else {
-    for (file_idx in 1:n_files){
-      start_idx <- (file_idx - 1) * max_rows_per_file + 1
-      end_idx <- min(file_idx * max_rows_per_file, length(job_lines))
-      
-      # Create filename with suffix
-      file_base <- sub("\\.txt$", "", output_jobfile)
-      current_file <- paste0(file_base, '_n',file_idx, ".txt")
-      
+    for (file_idx in 1:n_files) {
+      start_idx    <- (file_idx - 1) * max_rows_per_file + 1
+      end_idx      <- min(file_idx * max_rows_per_file, length(job_lines))
+      current_file <- paste0(sub("\\.txt$", "", output_jobfile), "_n", file_idx, ".txt")
       writeLines(job_lines[start_idx:end_idx], current_file)
       cat("Wrote", end_idx - start_idx + 1, "jobs to", current_file, "\n")
     }

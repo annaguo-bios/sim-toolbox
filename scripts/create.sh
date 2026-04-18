@@ -6,10 +6,10 @@ dsq_path="/home/aguo28/dSQ-master"
 ##########################
 
 # Prompt user for input
-echo "Enter the name for dsq job:"
+echo "Enter the name for dsq job, e.g. sim1:"
 read sim_input
 
-echo "Enter jobfile prefix"
+echo "Enter jobfile prefix. For example, prefix of joblist_n1.txt is joblist"
 read prefix
 
 echo "Enter the number of jobs to run"
