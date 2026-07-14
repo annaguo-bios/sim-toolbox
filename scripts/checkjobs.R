@@ -23,8 +23,9 @@ cat("
 |        estimator='none' -> no estimator subfolder                 |
 | FILE   {n}=sample size, {i}=sim index  (regex auto-derived)       |
 |        e.g. data_n{n}_seed{i}.Rdata -> data_n1000_seed42.Rdata    |
-| JOBLINES  use joblist_n1.txt as the default reference for joblines|
-| I usually use 'Rscript main.R {n} {i}' in joblist_n1.txt.         |
+| JOBLINES  joblist_n1.txt is the default job template; type a     |
+|           different filename to use another template.             |
+| I usually use 'Rscript main.R {n} {i}' in the job template.       |
 +------------------------------------------------------------------+
 ")
 
@@ -157,12 +158,10 @@ cat("Total missing jobs found:", nrow(missjob), "\n")
 ## write job files for missing results ## ====
 cat("\n--- Writing jobs to generate missing results ---\n")
 
-if (file.exists("joblist_n1.txt")) {
-  cat("Job template 'joblist_n1.txt' found.\n")
-  job_template_file <- "joblist_n1.txt"
-} else {
-  job_template_file <- read_input("Job template not found. Enter template filename: ")
-}
+job_template_default <- "joblist_n1.txt"
+job_template_input <- read_input(paste0("Job template file (default: ", job_template_default, "): "))
+job_template_file <- if (job_template_input != "") job_template_input else job_template_default
+cat("  job_template_file:", job_template_file, "\n")
 
 TIME_input <- read_input("TIME value for job index offset (default: 0): ")
 TIME <- if (TIME_input == "") 0 else as.numeric(TIME_input)
